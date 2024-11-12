@@ -268,57 +268,107 @@ const upload = multer({
       cb(new Error("Only image files are allowed"), false);
     }
   },
-});
-// Add image to a specific user by ID
-app.post("/uploadImage/:id/:catRef", upload.single("image"), async (req, res) => {
+}).array("images"); // Change to accept multiple files
+
+
+app.post("/uploadImage/:id/:catRef", upload, async (req, res) => {
   try {
     const userId = req.params.id;
     const catRef = req.params.catRef;
+    const currentDate = new Date();
 
-    if (!req.file) {
-      return res.status(400).json({ message: "No file uploaded" });
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ message: "No files uploaded" });
     }
 
-    const convertedBuffer = await sharp(req.file.buffer).webp().toBuffer();
-    const fileName = `images/${Date.now()}_${path.parse(req.file.originalname).name}.webp`;
-    const file = bucket.file(fileName);
+    // Loop through each file
+    const imageUrls = await Promise.all(req.files.map(async (file) => {
+      const convertedBuffer = await sharp(file.buffer).webp().toBuffer();
+      const fileName = `images/${Date.now()}_${path.parse(file.originalname).name}.webp`;
+      const firebaseFile = bucket.file(fileName);
 
-    // Create a stream to upload the file to Firebase Storage
-    const blobStream = file.createWriteStream({
-      metadata: {
-        contentType: 'image/webp',
-      },
-    });
+      await new Promise((resolve, reject) => {
+        const blobStream = firebaseFile.createWriteStream({
+          metadata: { contentType: 'image/webp' },
+        });
 
-    blobStream.on("error", (error) => {
-      res.status(500).json({ message: "Upload failed", error: error.message });
-    });
+        blobStream.on("finish", resolve);
+        blobStream.on("error", reject);
+        blobStream.end(convertedBuffer);
+      });
 
-    blobStream.on("finish", async () => {
-      await file.makePublic(); // Make the file public
-      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${file.name}`;
+      await firebaseFile.makePublic();
+      return `https://storage.googleapis.com/${bucket.name}/${firebaseFile.name}`;
+    }));
 
-      // Update the user's category with the new image URL
-      const currentDate = new Date();
-
-      const update = {
-        $push: {
-          [`category.${catRef}.urls`]: { url: publicUrl, date: currentDate, usedTime: 0 },
-        },
-      };
-      const updatedUser = await UserModel.findByIdAndUpdate(userId, update, { new: true });
-
-      if (!updatedUser) {
-        return res.status(404).json({ message: "User not found" });
+    // Update each image's URL in the user's category array
+    const update = {
+      $push: {
+        [`category.${catRef}.urls`]: imageUrls.map(url => ({ url, date: currentDate, usedTime: 0 }))
       }
-      res.status(200).json({ message: "Image uploaded successfully", user: updatedUser });
-    });
+    };
+    
+    const updatedUser = await UserModel.findByIdAndUpdate(userId, update, { new: true });
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
-    blobStream.end(req.file.buffer); // End the stream with the file buffer
+    res.status(200).json({ message: "Images uploaded successfully", user: updatedUser });
   } catch (err) {
-    res.status(500).json({ message: "Error uploading image", error: err.message });
+    res.status(500).json({ message: "Error uploading images", error: err.message });
   }
 });
+
+// Add image to a specific user by ID
+// app.post("/uploadImage/:id/:catRef", upload, async (req, res) => {
+//   try {
+//     const userId = req.params.id;
+//     const catRef = req.params.catRef;
+
+//     if (!req.file) {
+//       return res.status(400).json({ message: "No file uploaded" });
+//     }
+
+//     const convertedBuffer = await sharp(req.file.buffer).webp().toBuffer();
+//     const fileName = `images/${Date.now()}_${path.parse(req.file.originalname).name}.webp`;
+//     const file = bucket.file(fileName);
+
+//     // Create a stream to upload the file to Firebase Storage
+//     const blobStream = file.createWriteStream({
+//       metadata: {
+//         contentType: 'image/webp',
+//       },
+//     });
+
+//     blobStream.on("error", (error) => {
+//       res.status(500).json({ message: "Upload failed", error: error.message });
+//     });
+
+//     blobStream.on("finish", async () => {
+//       await file.makePublic(); // Make the file public
+//       const publicUrl = `https://storage.googleapis.com/${bucket.name}/${file.name}`;
+
+//       // Update the user's category with the new image URL
+//       const currentDate = new Date();
+
+//       const update = {
+//         $push: {
+//           [`category.${catRef}.urls`]: { url: publicUrl, date: currentDate, usedTime: 0 },
+//         },
+//       };
+//       const updatedUser = await UserModel.findByIdAndUpdate(userId, update, { new: true });
+
+//       if (!updatedUser) {
+//         return res.status(404).json({ message: "User not found" });
+//       }
+//       res.status(200).json({ message: "Image uploaded successfully", user: updatedUser });
+//     });
+
+//     blobStream.end(req.file.buffer); // End the stream with the file buffer
+//   } catch (err) {
+//     res.status(500).json({ message: "Error uploading image", error: err.message });
+//   }
+// });
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 app.post('/deleteItem', async (req, res) => {
